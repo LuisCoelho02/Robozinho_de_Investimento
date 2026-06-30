@@ -1,5 +1,14 @@
+!pip install python-binance yfinance lightgbm
+
+import pandas as pd
+from datetime import datetime, timedelta
+from binance import Client
+import yfinance as yf
+import time
+
+# O restante do seu código orientado a eventos e IA entra aqui...
+
 # Robozinho_de_Investimento
-Machine learning de investimentos voltada para Bancos
 
 from abc import ABC, abstractmethod
 import pandas as pd
@@ -33,7 +42,7 @@ class ExtratorStreamingBase(ABC):
 class ExtratorStreamingBinance(ExtratorStreamingBase):
     
     def streaming_dados(self, inicio: datetime, fim: datetime):
-        client = Client()
+        client = Client(tld='us')
         ini_str = inicio.strftime('%d %b, %Y %H:%M:%S')
         fim_str = fim.strftime('%d %b, %Y %H:%M:%S')
         
@@ -220,11 +229,12 @@ class ExecutionHandler:
 # 3. ENGINE CENTRAL (EVENT-DRIVEN LOOP)
 # ==============================================================================
 
-class TradingEngine:
+class cradingEngine:
     def __init__(self):
         self.events_queue = deque()
         self.strategy = Strategy(self.events_queue)
-        self.portfolio = Portfolio(self.events_queue)
+        # Garante que passamos a fila de eventos aqui
+        self.portfolio = Portfolio(self.events_queue, capital_inicial=10000.0) 
         self.execution = ExecutionHandler(self.events_queue)
 
     def run(self, feed_simulado: list[TickEvent]):
@@ -481,67 +491,48 @@ class StrategyComFiltroIA:
             else:
                 print(f"🛡️ [IA - BLOQUEADO] Sinal matemático ignorado. Risco de falso rompimento detectado.")
 
-import numpy as np
-
-class PortfolioComKelly:
+class Portfolio:
     """
     Gerencia o capital da conta, calcula o tamanho do lote dinamicamente
     usando o Critério de Kelly (Fracionado) e gera as ordens.
     """
-    def __init__(self, events_queue, capital_inicial: float, fraction: float = 0.5):
+    def __init__(self, events_queue, capital_inicial: float = 10000.0, fraction: float = 0.5):
         self.events_queue = events_queue
         self.capital_disponivel = capital_inicial
-        self.fraction = fraction  # Ex: 0.5 = Half Kelly (Mais seguro)
+        self.fraction = fraction  # 0.5 = Half Kelly
         
-        # Métricas históricas de performance da estratégia (atualizadas pós-backtest ou tracking)
-        # Podem ser calculadas globalmente ou por ativo.
-        self.win_rate = 0.55         # 55% de acerto
-        self.risk_reward_ratio = 1.8 # Ganha $1.80 para cada $1.00 perdido
+        # Métricas estatísticas de performance (Win Rate e Risk-Reward)
+        self.win_rate = 0.55         
+        self.risk_reward_ratio = 1.8 
 
     def calcular_fracao_kelly(self) -> float:
-        """Calcula a porcentagem teórica do capital a ser arriscada."""
         W = self.win_rate
         R = self.risk_reward_ratio
-        
-        if R <= 0:
-            return 0.0
-            
-        # Fórmula matemática de Kelly
+        if R <= 0: return 0.0
         kelly_f = W - ((1 - W) / R)
-        
-        # Se Kelly for negativo, a estratégia tem expectativa matemática negativa (Não operar!)
         return max(0.0, kelly_f)
 
+    # O ARGUMENTO CORRETOR: Adicionado o preco_atual exigido pelo loop final
     def update_signal(self, signal, preco_atual: float):
-        """
-        Consome os sinais validados e calcula o tamanho exato da ordem (lote).
-        """
-        # 1. Obtém a fração de Kelly sugerida e aplica a redução fracionária de risco
+        """Consome sinais e calcula o tamanho do lote via Kelly."""
         f_kelly = self.calcular_fracao_kelly()
         porcentagem_risco = f_kelly * self.fraction
-        
-        # Capital financeiro total que podemos alocar nesta operação
         capital_alocado = self.capital_disponivel * porcentagem_risco
         
-        # 2. Calcula o tamanho do lote com base no preço nominal do ativo (Ação ou Cripto)
         if preco_atual <= 0:
-            print(f"⚠️ [PORTFÓLIO] Preço inválido para {signal.symbol}. Ordem abortada.")
             return
 
         quantidade_lote = capital_alocado / preco_atual
         
-        # Regras de arredondamento dependendo do mercado
-        if "USDT" in signal.symbol:
-            # Cripto: Permite frações decimais (Ex: 0.005 BTC)
-            quantidade_lote = round(quantidade_lote, 4)
+        # Regra de arredondamento inteligente por classe de ativo
+        if "USD" in signal.symbol:
+            quantidade_lote = round(quantidade_lote, 4) # Cripto
         else:
-            # Ações tradicionais (Ex: B3 ou Mercado Americano sem fracionado): Lotes inteiros
-            quantidade_lote = int(np.floor(quantidade_lote))
+            import numpy as np
+            quantidade_lote = int(np.floor(quantidade_lote)) # Ações inteiras
 
-        # 3. Dispara a ordem se o lote mínimo for viável
         if quantidade_lote > 0:
-            print(f"💰 [KELLY] Capital Total: ${self.capital_disponivel:.2f} | Risco: {porcentagem_risco*100:.1f}% | Alocado: ${capital_alocado:.2f}")
-            
+            print(f"💰 [KELLY] Capital: ${self.capital_disponivel:.2f} | Risco: {porcentagem_risco*100:.1f}% | Alocado: ${capital_alocado:.2f}")
             order = OrderEvent(
                 symbol=signal.symbol,
                 order_type="MARKET",
@@ -549,47 +540,69 @@ class PortfolioComKelly:
                 direction=signal.direction
             )
             self.events_queue.append(order)
-        else:
-            print(f"⚠️ [PORTFÓLIO] Capital alocado insuficiente para comprar 1 unidade mínima de {signal.symbol}.")
 
-    def update_fill(self, fill):
-        """Atualiza o saldo real disponível após a execução da ordem no mercado."""
-        custo_total = (fill.quantity * fill.fill_cost) + fill.commission
-        
-        if fill.direction == "BUY":
-            self.capital_disponivel -= custo_total
-            print(f"💳 [CONTA] Posição Aberta. Saldo Atualizado: ${self.capital_disponivel:.2f}")
-        elif fill.direction == "SELL":
-            # Em caso de venda, o capital retorna somado/subtraído do resultado (simplificado)
-            self.capital_disponivel += custo_total 
-            print(f"💳 [CONTA] Posição Fechada. Saldo Atualizado: ${self.capital_disponivel:.2f}")
+# ==============================================================================
+# BLOCO DE EXECUÇÃO ATUALIZADO (COLE ESTE BLOCO NO FINAL DO SEU NOTEBOOK)
+# ==============================================================================
 
 if __name__ == "__main__":
-    from collections import deque
-    from typing import NamedTuple
-    
-    # Mock dos eventos mínimos necessários para o teste
-    class SignalEvent(NamedTuple): symbol: str; direction: str
-    class OrderEvent(NamedTuple): symbol: str; order_type: str; quantity: float; direction: str
+    # IMPORTANTE: Para dados de 1 minuto ("1m"), o Yahoo exige datas dos últimos 30 dias.
+    # Vamos definir automaticamente uma janela dos últimos 4 dias até ontem.
+    hoje = datetime.now()
+    inicio = hoje - timedelta(days=4)
+    fim = hoje - timedelta(days=1)
 
-    fila_eventos = deque()
-    
-    # Iniciando a conta com $10.000 USD
-    portfolio = PortfolioComKelly(events_queue=fila_eventos, capital_inicial=10000.0, fraction=0.5)
-    
-    # Cenário 1: Sinal para Bitcoin (Preço alto, lote fracionado)
-    sinal_btc = SignalEvent(symbol="BTCUSDT", direction="BUY")
-    print("\n--- Processando Sinal 1 ---")
-    portfolio.update_signal(sinal_btc, preco_atual=65000.00)
-    
-    # Cenário 2: Sinal para uma Ação Nacional (Preço baixo, lote inteiro)
-    sinal_petr = SignalEvent(symbol="PETR4.SA", direction="BUY")
-    print("\n--- Processando Sinal 2 ---")
-    portfolio.update_signal(sinal_petr, preco_atual=36.50)
+    print(f"📅 Janela de backtest configurada de {inicio.strftime('%Y-%m-%d')} até {fim.strftime('%Y-%m-%d')}")
 
-    # Imprime o que foi gerado na fila de saída para a ExecutionHandler
-    print("\n📦 Ordens geradas na Fila de Eventos:")
-    while fila_eventos:
-        print(fila_eventos.popleft())
+    # Criamos a lista de monitoramento usando APENAS o Extrator do Yahoo Finance
+    # Mudamos o par de cripto para o padrão do Yahoo (ex: BTC-USD, ETH-USD)
+    feeds = [
+        ExtratorStreamingYahoo(ticker="BTC-USD", intervalo="1m"),  # Bitcoin Sem Bloqueio
+        ExtratorStreamingYahoo(ticker="ETH-USD", intervalo="1m"),  # Ethereum Sem Bloqueio
+        ExtratorStreamingYahoo(ticker="AAPL", intervalo="1m")      # Ação Americana
+    ]
 
+    # Instancia a Engine única de Eventos
+    engine = TradingEngine()
+    
+    # Executa o loop para cada feed ativo
+    for feed in feeds:
+        print(f"\n--- 📡 Conectando ao Feed Seguro: {feed.ticker} ---")
+        
+        # Puxa o fluxo gerador da API do Yahoo
+        fluxo_dados = feed.streaming_dados(inicio, fim)
+        
+        # Passa o gerador direto para a nossa Engine de Eventos processar linha por linha
+        # Limitamos visualmente na Engine ou consumimos um pedaço para teste:
+        contador = 0
+        queue = engine.events_queue
+        
+        for linha_bruta in fluxo_dados:
+            # Transforma a linha do feed em um TickEvent estruturado para a Engine
+            tick = TickEvent(
+                timestamp=linha_bruta["Timestamp"],
+                symbol=linha_bruta["Ativo"],
+                bid=linha_bruta["Fechamento"], # Simplificação: usando fechamento como proxy de preço
+                ask=linha_bruta["Fechamento"]
+            )
+            
+            # Alimenta a fila da Engine
+            queue.append(tick)
+            
+            # Processa a cascata interna de eventos (TICK -> SIGNAL -> ORDER -> FILL)
+            while queue:
+                event = queue.popleft()
+                if isinstance(event, TickEvent):
+                    engine.strategy.calculate_signals(event)
+                elif isinstance(event, SignalEvent):
+                    # Para o cálculo de Kelly, passamos o preço atual do ativo
+                    engine.portfolio.update_signal(event, preco_atual=tick.bid)
+                elif isinstance(event, OrderEvent):
+                    engine.execution.execute_order(event)
+                elif isinstance(event, FillEvent):
+                    print(f"✅ [FILL] {event.direction} {event.quantity} u de {event.symbol} a ${event.fill_cost:.2f}")
 
+            contador += 1
+            if contador >= 5: # Interrompe após 5 linhas para o log do Colab não ficar infinito
+                print(f"⏱️ Primeiros 5 minutos de {feed.ticker} processados com sucesso via eventos.")
+                break
