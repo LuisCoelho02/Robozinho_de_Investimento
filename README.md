@@ -17,6 +17,9 @@ from binance import Client
 import yfinance as yf
 import time
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 # ==========================================
 # 1. CLASSE ABSTRATA MÃE (USANDO GERADORES)
 # ==========================================
